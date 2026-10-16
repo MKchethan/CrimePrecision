@@ -1,75 +1,251 @@
-from flask import Flask, request, jsonify
-from flask_pymongo import PyMongo
-from pymongo import MongoClient
-from bson.json_util import dumps
-from bson import ObjectId
-from werkzeug.security import generate_password_hash, check_password_hash
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response
+import pandas as pd
+from ultralytics import YOLO
+import cv2
+from getrandomforest import loaded_model
+from mongo_config import base_config
+from send_detected_email import notify_me
+from score import pred_score
+from history import get_history
+pd.set_option('display.max_columns', 100)
+
+# Load YOLO model outside the route function
+yolo_model = YOLO(r"C:\Users\Promantus\PycharmProjects\detections\best.pt")
+
 
 app = Flask(__name__)
-
-# Configure MongoDB connection
-client = MongoClient('mongodb://localhost:27017')
-db = client['Crime_Precision']
-users_collection = db['User_Data']
+app.secret_key = 'crime'
+data, users_collection = base_config()
 
 
 @app.route('/')
 def home():
-    return "Crime Precision"
+    return render_template('index.html')
+
+
+@app.route('/signup')
+def signup():
+    return render_template('signup.html')
+
+
+@app.route('/users')
+def users():
+    if 'user_email' in session:
+        return render_template('users.html')
+    else:
+        return redirect(url_for('login'))
+
+
+@app.route('/login')
+def login():
+    return render_template('login.html')
+
+
+@app.route('/generalUser')
+def general_User():
+    return render_template('gen_user.html')
+
+
+@app.route('/batch_data', methods=['GET'])
+def batch_users():
+    return render_template('batch_predict.html')
+
+
+@app.route('/history')
+def find_history_in():
+    return render_template('history.html')
 
 
 @app.route('/login', methods=['POST'])
-def login():
-    data = request.get_json()
+def login_backend():
 
-    email = data.get('email')
-    password = data.get('password')
-    print(36, email, password)
+    email = request.form.get('email')
+    password = request.form.get('password')
 
-    login_successful = list(users_collection.find({'$and': [{'mail': email}, {'password': password}]}))
+    user = users_collection.find_one({'email': email, 'password': password})
 
-    if email == "" or password == "":
-        response = {"message": "Please enter the valid email address and password"}
-        return jsonify(response), 401
-    elif login_successful:
-        response = {'message': 'Login successful'}
-        return jsonify(response), 200
-    else:
+    if not user:
         response = {'message': 'Invalid credentials'}
         return jsonify(response), 401
 
+    session['user_email'] = email
+    return redirect(url_for('users'))
+
 
 @app.route('/signup', methods=['POST'])
-def signup():
-    data = request.get_json()
-
-    name = data.get('name')
-    email = data.get('email')
-    phone_number = data.get('phone_number')
-    college_name = data.get('college_name')
-    password = data.get('password')
+def signup_backend():
+    name = request.form.get('name')
+    email = request.form.get('email')
+    phone_number = request.form.get('phone_number')
+    college_name = request.form.get('college_name')
+    password = request.form.get('password')
 
     existing_user = users_collection.find_one({'email': email})
 
-    if name == "" or email == "" or phone_number == "" or college_name == "" or password == "":
-        response = {"message": "Please enter the valid field values"}
-        return response, 401
+    if not name or not email or not phone_number or not college_name or not password:
+        response = {'message': 'Please enter valid field values'}
+        return jsonify(response), 401
+
     if existing_user:
         response = {'message': 'Email already exists. Try a different email.'}
         return jsonify(response), 400
-    else:
-        # hashed_password = generate_password_hash(password, method='sha256')
-        new_user = {
-            'name': name,
-            'email': email,
-            'phone_number': phone_number,
-            'college_name': college_name,
-            'password': password
-        }
 
-        users_collection.insert_one(new_user)
-        response = {'message': 'Account created successfully'}
-        return jsonify(response), 201
+    new_user = {
+        'name': name,
+        'email': email,
+        'phone_number': phone_number,
+        'college_name': college_name,
+        'password': password
+    }
+
+    users_collection.insert_one(new_user)
+    response = {'message': 'Account created successfully'}
+    return jsonify(response), 201
+
+
+@app.route('/generalUser', methods=['POST'])
+def general_user_backend():
+    state = request.form.get('State')
+    district = request.form.get('District')
+    year = request.form.get('Year')
+    # state = state
+    # district = district
+    # year = year
+    # Filter data for the specified state and district for the year 2023
+    data_subset = data[
+        (data["STATE/UT"] == state) & (data["DISTRICT"] == district) & (data["YEAR"] >= 2011) & (
+                    data["YEAR"] <= 2023)]
+    data_subset = data_subset.groupby(["STATE/UT", "DISTRICT"]).sum().reset_index()
+    # Extract features for prediction (excluding STATE/UT, DISTRICT, YEAR, and TOTAL IPC CRIMES)
+    X_pred = data_subset.drop(columns=["STATE/UT", "DISTRICT", "YEAR", "TOTAL IPC CRIMES"])
+    # Predict for the year 2024
+    predicted_crimes_2024 = loaded_model.predict(X_pred)
+    predicted_crimes_2024 = int(predicted_crimes_2024)
+    Rate, Prediction_score = pred_score(year, predicted_crimes_2024)
+    response = {'message': f"Prediction for the Year: {year}, Predicted Crime Number: {Prediction_score}, \n"
+                           f"Crime rate: {Rate}"}
+    return jsonify(response), 201
+
+
+@app.route('/batch_data', methods=['POST'])
+def process_uploaded_file():
+    if 'file' in request.files:
+        uploaded_file = request.files['file']
+        results = []
+        if uploaded_file.filename.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+            df = df[["STATE/UT", "DISTRICT"]]
+            for index, row in df.iterrows():
+                state = row["STATE/UT"]
+                district = row["DISTRICT"]
+                data_subset = data[
+                    (data["STATE/UT"] == state) & (data["DISTRICT"] == district) & (data["YEAR"] >= 2011) & (
+                                data["YEAR"] <= 2023)]
+                data_subset = data_subset.groupby(["STATE/UT", "DISTRICT"]).sum().reset_index()
+                # Extract features for prediction (excluding STATE/UT, DISTRICT, YEAR, and TOTAL IPC CRIMES)
+                X_pred = data_subset.drop(columns=["STATE/UT", "DISTRICT", "YEAR", "TOTAL IPC CRIMES"])
+                # Predict for the year 2024
+                predicted_crimes_2024 = loaded_model.predict(X_pred)
+                predicted_crimes_2024 = int(predicted_crimes_2024)
+
+                if predicted_crimes_2024 < 840:
+                    predicted_crimes_2025 = predicted_crimes_2024 + 18
+                    predicted_crimes_2026 = predicted_crimes_2024 + 30
+                    rate = "low ✅"
+                elif 840 < predicted_crimes_2024 < 3875:
+                    predicted_crimes_2025 = predicted_crimes_2024 + 76
+                    predicted_crimes_2026 = predicted_crimes_2024 + 110
+                    rate = "medium 🟡"
+                else:
+                    predicted_crimes_2025 = predicted_crimes_2024 + 113
+                    predicted_crimes_2026 = predicted_crimes_2024 + 143
+                    rate = "high ☠️"
+
+                result = {
+                    "State/UT": state,
+                    "District": district,
+                    "Predicted Score 2024": predicted_crimes_2024,
+                    "Predicted Score 2025": predicted_crimes_2025,
+                    "Predicted Score 2026": predicted_crimes_2026,
+                    "Crime Rate": rate
+                }
+                results.append(result)
+        return jsonify(results)
+
+        # return jsonify({"error": "Invalid file format or no file uploaded"}), 400
+    return "Invalid file format or no file uploaded", 400
+
+
+@app.route('/web_cam', methods=['GET'])
+def live_weapon_detection():
+    # Load YOLO model
+
+    # Capture video from source 0 (webcam)
+    cap = cv2.VideoCapture(0)
+
+    while True:
+        # Read a frame from the video
+        ret, frame = cap.read()
+
+        # Perform object detection
+        results = yolo_model(frame)
+
+        # Check if there are any detections
+        if isinstance(results, list) and len(results) > 0:
+            first_result = results[0]
+
+            # Check if this result has the expected attribute (e.g., xyxy)
+            if hasattr(first_result, 'xyxy') and first_result.xyxy.shape[0] > 0:
+                # Iterate through each detection
+                for pred in first_result.xyxy:
+                    label = int(pred[5])
+                    conf = pred[4]
+                    if conf > 0.5:  # Set a confidence threshold
+                        # send_email("Weapon Detected", "A weapon has been detected in the video stream.")
+                        xmin, ymin, xmax, ymax = map(int, pred[:4])
+                        cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
+                        cv2.putText(frame, f"Class: {label}, Conf: {conf:.2f}", (xmin, ymin - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+        # Display the frame with bounding boxes
+        cv2.imshow('Object Detection', frame)
+
+        # Check for the 'q' key to exit the loop
+        key = cv2.waitKey(1)
+        if key & 0xFF == ord('q') or cv2.getWindowProperty('Object Detection', cv2.WND_PROP_VISIBLE) < 1:
+            break
+
+    # Release the video capture object and close all OpenCV windows
+    cap.release()
+    cv2.destroyAllWindows()
+    notify_me()
+
+
+@app.route('/model_info', methods=['GET'])
+def model_info():
+    return render_template('model_info.html',
+                           state_vs_crime_img="new_state_vs_totalcrimes.png",
+                           crime_vs_count_img="new_totalcrime_vs_type.png",
+                           year_vs_crime_img="new_year_vs_cases.png",
+                           forcasteCrime_img="new_farcaste.png",
+                           theft_vsburglary_img="new_theft_vs_burglary.png"
+                           )
+
+
+@app.route('/history', methods=['POST'])
+def find_history():
+    state = request.form.get('State')
+    district = request.form.get('District')
+    year = request.form.get('Year')
+    history_dict = get_history(data, state, district, int(year))
+    response = {'message': f"{history_dict}"}
+    return jsonify(response), 201
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
 
 
 if __name__ == '__main__':
