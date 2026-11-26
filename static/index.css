@@ -1,0 +1,71 @@
+body {
+    font-family: Arial, sans-serif;
+    background-color: #f4f4f4;
+    margin: 0;
+    padding: 0;
+}
+
+.home_container {
+
+    background-color: #120e0e;
+    padding: 2px;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+.welcome_img {
+    background: url("poli_car.jpg") center/cover no-repeat;
+    height: 100vh; /* Set the height to cover the full viewport height */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+h1, h2 {
+    text-align: center;
+    color: #666;
+    margin: 0;
+}
+
+.subtitle {
+    color: #666;
+    margin-top: 10px;
+}
+
+.button_container {
+    text-align: center;
+    margin-top: 20px;
+}
+
+.button {
+    display: inline-block;
+    padding: 10px 20px;
+    text-decoration: none;
+    background-color: #4caf50; /* Green color */
+    color: #fff; /* White text color */
+    border-radius: 5px;
+    transition: background-color 0.3s ease;
+}
+
+.button:hover {
+    background-color: #45a049; /* Darker green color on hover */
+}
+
+
+.left-back{
+    margin-bottom: 600px;
+    margin-left: 15px;
+}
+
+button {
+    background-color: #4caf50;
+    color: #fff;
+    padding: 10px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+button:hover {
+    background-color: #45a049;
+}
